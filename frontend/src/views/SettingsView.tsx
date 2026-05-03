@@ -2,10 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { InfoTip } from '../components/InfoTip';
 import { Panel } from '../components/Panel';
 import { SectionHeader } from '../components/SectionHeader';
-import type { ServerSettings } from '../types';
+import type { ServerSettings, TaskType, VoiceProfile } from '../types';
 
 interface SettingsViewProps {
   value: ServerSettings;
+  voices?: VoiceProfile[];
   onChange: (next: ServerSettings) => void;
   onSave: (next: ServerSettings) => Promise<void>;
 }
@@ -34,6 +35,39 @@ interface RuntimePreset {
   label: string;
   createdAt: string;
   settings: RuntimePresetSettings;
+}
+
+function taskTypeFromModel(modelId: string): TaskType {
+  if (modelId.endsWith('VoiceDesign')) return 'VoiceDesign';
+  if (modelId.endsWith('Base')) return 'Base';
+  return 'CustomVoice';
+}
+
+function voiceValue(voice: VoiceProfile) {
+  return voice.kind === 'custom' ? voice.id : voice.name;
+}
+
+function voiceMatchesValue(voice: VoiceProfile, value: string) {
+  return voice.id === value || voice.name === value;
+}
+
+function voiceOptionsForModel(modelId: string, voices: VoiceProfile[], builtInVoices: string[]) {
+  const taskType = taskTypeFromModel(modelId);
+  if (taskType === 'VoiceDesign') return [];
+  if (taskType === 'Base') return voices.filter((voice) => voice.kind === 'custom');
+
+  const builtInFromCatalog = voices.filter((voice) => voice.kind !== 'custom');
+  if (builtInFromCatalog.length > 0) return builtInFromCatalog;
+  return builtInVoices.map((name) => ({
+    id: name.toLowerCase(),
+    name,
+    kind: 'built-in' as const,
+    model: '',
+    language: '',
+    style: '',
+    sampleLabel: 'Built-in voice',
+    consent: true,
+  }));
 }
 
 function readPresets(): RuntimePreset[] {
@@ -67,11 +101,14 @@ function toPresetSettings(value: ServerSettings): RuntimePresetSettings {
   };
 }
 
-export function SettingsView({ value, onChange, onSave }: SettingsViewProps) {
+export function SettingsView({ value, voices = [], onChange, onSave }: SettingsViewProps) {
   const [status, setStatus] = useState('');
   const [presets, setPresets] = useState<RuntimePreset[]>(() => readPresets());
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [presetName, setPresetName] = useState('');
+  const defaultTaskType = taskTypeFromModel(value.defaultModel);
+  const defaultVoiceOptions = voiceOptionsForModel(value.defaultModel, voices, value.builtInVoices);
+  const selectedDefaultVoice = defaultVoiceOptions.find((voice) => voiceMatchesValue(voice, value.defaultVoice));
 
   useEffect(() => {
     try {
@@ -83,6 +120,15 @@ export function SettingsView({ value, onChange, onSave }: SettingsViewProps) {
 
   function patch<K extends keyof ServerSettings>(key: K, nextValue: ServerSettings[K]) {
     onChange({ ...value, [key]: nextValue });
+  }
+
+  function patchDefaultModel(modelId: string) {
+    const nextOptions = voiceOptionsForModel(modelId, voices, value.builtInVoices);
+    onChange({
+      ...value,
+      defaultModel: modelId,
+      defaultVoice: nextOptions[0] ? voiceValue(nextOptions[0]) : '',
+    });
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -252,14 +298,26 @@ export function SettingsView({ value, onChange, onSave }: SettingsViewProps) {
                 Default model
                 <InfoTip text="Active synthesis model used when operators queue a request without overriding the model manually." />
               </span>
-              <input value={value.defaultModel} onChange={(event) => patch('defaultModel', event.target.value)} />
+              <input value={value.defaultModel} onChange={(event) => patchDefaultModel(event.target.value)} />
             </label>
             <label>
               <span className="field-label">
                 Default voice
-                <InfoTip text="Default built-in voice shown when the form opens in CustomVoice mode." />
+                <InfoTip text="Available choices depend on the default model: built-in voices for CustomVoice, saved profiles for Base, and none for VoiceDesign." />
               </span>
-              <input value={value.defaultVoice} onChange={(event) => patch('defaultVoice', event.target.value)} />
+              <select
+                value={selectedDefaultVoice ? voiceValue(selectedDefaultVoice) : ''}
+                onChange={(event) => patch('defaultVoice', event.target.value)}
+                disabled={defaultTaskType === 'VoiceDesign' || defaultVoiceOptions.length === 0}
+              >
+                {defaultTaskType === 'VoiceDesign' ? <option value="">Prompt-defined voice</option> : null}
+                {defaultTaskType !== 'VoiceDesign' && defaultVoiceOptions.length === 0 ? <option value="">No compatible voices</option> : null}
+                {defaultVoiceOptions.map((voice) => (
+                  <option key={voice.id} value={voiceValue(voice)}>
+                    {voice.name}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               <span className="field-label">

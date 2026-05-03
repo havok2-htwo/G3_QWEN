@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -10,6 +11,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODELS_ROOT = PROJECT_ROOT / 'models'
 DEFAULT_FRONTEND_DIST = PROJECT_ROOT / 'frontend' / 'dist'
 DEFAULT_DATA_DIR = PROJECT_ROOT / 'data'
+
+RUNTIME_SETTINGS_FILE = 'runtime_settings.json'
+RUNTIME_SETTINGS_FIELDS = {
+    'active_model',
+    'default_voice',
+    'models_root_dir',
+    'whisper_base_url',
+    'whisper_path',
+    'retention_days',
+    'max_queue_size',
+    'allow_model_downloads',
+    'preferred_device',
+    'attention_implementation',
+    'torch_dtype',
+    'frontend_poll_interval_ms',
+    'frontend_theme',
+    'sentence_chunking',
+    'short_sentence_merge_max_chars',
+    'following_sentence_merge_min_chars',
+    'max_parallel_requests',
+    'max_batch_size',
+    'batch_wait_ms',
+    'stream_chunk_ms',
+    'stream_prebuffer_ms',
+}
 
 
 class Settings(BaseSettings):
@@ -86,8 +112,38 @@ class Settings(BaseSettings):
         return Path(value).expanduser()
 
 
+def load_runtime_settings(settings: Settings) -> None:
+    path = settings.data_dir / RUNTIME_SETTINGS_FILE
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    for field_name in RUNTIME_SETTINGS_FIELDS:
+        if field_name not in payload:
+            continue
+        value = payload[field_name]
+        if field_name == 'models_root_dir':
+            value = Path(value).expanduser()
+        setattr(settings, field_name, value)
+
+
+def save_runtime_settings(settings: Settings) -> None:
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    for field_name in sorted(RUNTIME_SETTINGS_FIELDS):
+        value = getattr(settings, field_name)
+        payload[field_name] = str(value) if isinstance(value, Path) else value
+    path = settings.data_dir / RUNTIME_SETTINGS_FILE
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
+
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    load_runtime_settings(settings)
     settings.models_root_dir.mkdir(parents=True, exist_ok=True)
     return settings

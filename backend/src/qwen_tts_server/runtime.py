@@ -108,6 +108,8 @@ class QwenSynthesizer:
         start = time.perf_counter()
         torch, qwen_model_cls = self._load_runtime_dependencies()
         model_source, extra_kwargs = self._resolve_model_source(model_id)
+        if self._model is not None and self._loaded_model_id != model_id:
+            self._release_model()
         kwargs = {
             'device_map': 'auto' if self.settings.enable_cpu_offload else self.settings.preferred_device,
             'dtype': self._torch_dtype(torch),
@@ -145,7 +147,6 @@ class QwenSynthesizer:
             except Exception as e:
                 print(f"Warning: Failed to compile model: {e}")
 
-        self._release_model()
         self._model = model
         self._loaded_model_id = model_id
         self.settings.active_model = model_id
@@ -228,8 +229,10 @@ class QwenSynthesizer:
 
     def _release_model(self) -> None:
         if self._model is None:
+            self._loaded_model_id = None
             return
         self._model = None
+        self._loaded_model_id = None
         gc.collect()
         if self._torch is not None and self.settings.preferred_device.startswith('cuda') and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()

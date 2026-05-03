@@ -32,6 +32,7 @@ class BatchSynthesisResult:
     sample_rate: int
     pcm: bytes
     duration_ms: int
+    sentence_finished: bool = False
 
 
 class QwenSynthesizer:
@@ -119,6 +120,8 @@ class QwenSynthesizer:
         start = time.perf_counter()
         torch, qwen_model_cls = self._load_runtime_dependencies()
         model_source, extra_kwargs = self._resolve_model_source(model_id)
+        if self._model is not None and self._loaded_model_id != model_id:
+            self._release_model()
         kwargs = {
             'device_map': 'auto' if self.settings.enable_cpu_offload else self.settings.preferred_device,
             'dtype': self._torch_dtype(torch),
@@ -154,7 +157,6 @@ class QwenSynthesizer:
             except Exception:
                 pass
 
-        self._release_model()
         self._model = model
         self._loaded_model_id = model_id
         self.settings.active_model = model_id
@@ -238,8 +240,10 @@ class QwenSynthesizer:
 
     def _release_model(self) -> None:
         if self._model is None:
+            self._loaded_model_id = None
             return
         self._model = None
+        self._loaded_model_id = None
         gc.collect()
         if self._torch is not None and self.settings.preferred_device.startswith('cuda') and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
@@ -344,13 +348,29 @@ class QwenSynthesizer:
                 max_new_tokens=generate_kwargs['max_new_tokens'],
             )
 
-            for audio_chunks, _finished in stream:
+            announced_finished: set[int] = set()
+            for audio_chunks, finished in stream:
                 results: list[BatchSynthesisResult] = []
-                for item, audio in zip(items, audio_chunks, strict=False):
+                for batch_index, (item, audio) in enumerate(zip(items, audio_chunks, strict=False)):
+                    sentence_finished = bool(batch_index < len(finished) and finished[batch_index])
                     if audio is None:
+                        if sentence_finished and batch_index not in announced_finished:
+                            results.append(
+                                BatchSynthesisResult(
+                                    job_id=item.job_id,
+                                    sentence_index=item.sentence_index,
+                                    sample_rate=sample_rate,
+                                    pcm=b'',
+                                    duration_ms=0,
+                                    sentence_finished=True,
+                                )
+                            )
+                            announced_finished.add(batch_index)
                         continue
                     pcm = self._audio_array_to_pcm_bytes(audio)
-                    if not pcm:
+                    if sentence_finished:
+                        announced_finished.add(batch_index)
+                    if not pcm and not sentence_finished:
                         continue
                     results.append(
                         BatchSynthesisResult(
@@ -359,6 +379,7 @@ class QwenSynthesizer:
                             sample_rate=sample_rate,
                             pcm=pcm,
                             duration_ms=int(round(len(pcm) / 2 / max(sample_rate, 1) * 1000)),
+                            sentence_finished=sentence_finished,
                         )
                     )
                 if results:

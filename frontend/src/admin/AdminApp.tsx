@@ -34,6 +34,23 @@ function preferredBaseModel(models: DashboardSnapshot["models"]) {
   );
 }
 
+function voiceOptionsForTask(voices: DashboardSnapshot["voices"], taskType: TaskType) {
+  if (taskType === "Base") return voices.filter((voice) => voice.source === "custom");
+  if (taskType === "CustomVoice") return voices.filter((voice) => voice.source !== "custom");
+  return [];
+}
+
+function firstVoiceValueForTask(voices: DashboardSnapshot["voices"], taskType: TaskType) {
+  const options = voiceOptionsForTask(voices, taskType);
+  const first = options[0];
+  if (!first) return "";
+  return first.source === "custom" ? first.voice_id : first.name;
+}
+
+function voiceMatchesValue(voice: DashboardSnapshot["voices"][number], value: string) {
+  return voice.voice_id === value || voice.name === value;
+}
+
 async function copyToClipboard(value: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
@@ -110,14 +127,14 @@ export function AdminApp() {
   const models = snapshot?.models ?? [];
   const voices = snapshot?.voices ?? [];
   const quickTaskType = useMemo(() => inferTaskType(quickModel || snapshot?.settings.default_model || ""), [quickModel, snapshot]);
-  const quickVoices = useMemo(
-    () => {
-      if (quickTaskType === "Base") return voices.filter((voice) => voice.source === "custom");
-      if (quickTaskType === "CustomVoice") return voices.filter((voice) => voice.source !== "custom");
-      return voices;
-    },
-    [quickTaskType, voices],
-  );
+  const quickVoices = useMemo(() => voiceOptionsForTask(voices, quickTaskType), [quickTaskType, voices]);
+  const defaultTaskType = useMemo(() => inferTaskType(settingsDraft?.default_model || ""), [settingsDraft?.default_model]);
+  const defaultVoiceOptions = useMemo(() => voiceOptionsForTask(voices, defaultTaskType), [defaultTaskType, voices]);
+  const selectedDefaultVoice = useMemo(() => {
+    const match = defaultVoiceOptions.find((voice) => voiceMatchesValue(voice, settingsDraft?.default_voice || ""));
+    if (!match) return "";
+    return match.source === "custom" ? match.voice_id : match.name;
+  }, [defaultVoiceOptions, settingsDraft?.default_voice]);
   const customVoices = useMemo(() => voices.filter((voice) => voice.source === "custom"), [voices]);
 
   useEffect(() => {
@@ -126,11 +143,38 @@ export function AdminApp() {
       return;
     }
     setQuickVoice((current) =>
-      current && quickVoices.some((voice) => voice.voice_id === current || voice.name === current)
+      current && quickVoices.some((voice) => voiceMatchesValue(voice, current))
         ? current
-        : quickVoices[0].voice_id,
+        : firstVoiceValueForTask(voices, quickTaskType),
     );
-  }, [quickVoices]);
+  }, [quickTaskType, quickVoices, voices]);
+
+  useEffect(() => {
+    if (!settingsDraft) return;
+    if (defaultTaskType === "VoiceDesign") {
+      if (settingsDraft.default_voice) {
+        setSettingsDraft({ ...settingsDraft, default_voice: "" });
+      }
+      return;
+    }
+    if (!defaultVoiceOptions.length) return;
+    if (!defaultVoiceOptions.some((voice) => voiceMatchesValue(voice, settingsDraft.default_voice))) {
+      setSettingsDraft({ ...settingsDraft, default_voice: firstVoiceValueForTask(voices, defaultTaskType) });
+    }
+  }, [defaultTaskType, defaultVoiceOptions, settingsDraft, voices]);
+
+  function patchDefaultModel(modelId: string) {
+    const nextTaskType = inferTaskType(modelId);
+    setSettingsDraft((current) =>
+      current
+        ? {
+            ...current,
+            default_model: modelId,
+            default_voice: firstVoiceValueForTask(voices, nextTaskType),
+          }
+        : current,
+    );
+  }
 
   function handleQuickVoiceChange(voiceId: string) {
     const voice = voices.find((item) => item.voice_id === voiceId || item.name === voiceId);
@@ -414,8 +458,12 @@ export function AdminApp() {
 
         <section className="widget span-5"><div className="widget-header"><h2>Runtime Settings</h2></div>
           <div className="field-grid two">
-            <label>Default model<select value={settingsDraft.default_model} onChange={(event) => setSettingsDraft({ ...settingsDraft, default_model: event.target.value })}>{models.map((model) => <option key={model.model_id} value={model.model_id}>{model.model_id}</option>)}</select></label>
-            <label>Default voice<input value={settingsDraft.default_voice} onChange={(event) => setSettingsDraft({ ...settingsDraft, default_voice: event.target.value })} /></label>
+            <label>Default model<select value={settingsDraft.default_model} onChange={(event) => patchDefaultModel(event.target.value)}>{models.map((model) => <option key={model.model_id} value={model.model_id}>{model.model_id}</option>)}</select></label>
+            <label>Default voice<select value={selectedDefaultVoice} onChange={(event) => setSettingsDraft({ ...settingsDraft, default_voice: event.target.value })} disabled={defaultTaskType === "VoiceDesign" || !defaultVoiceOptions.length}>
+              {defaultTaskType === "VoiceDesign" ? <option value="">Prompt-defined voice</option> : null}
+              {defaultTaskType !== "VoiceDesign" && !defaultVoiceOptions.length ? <option value="">Keine passende Stimme</option> : null}
+              {defaultVoiceOptions.map((voice) => <option key={voice.voice_id} value={voice.source === "custom" ? voice.voice_id : voice.name}>{voice.name}</option>)}
+            </select></label>
             <label>Queue limit<input type="number" value={settingsDraft.queue_limit} onChange={(event) => setSettingsDraft({ ...settingsDraft, queue_limit: Number(event.target.value) || 1 })} /></label>
             <label>Active requests<input type="number" value={settingsDraft.max_parallel_requests} onChange={(event) => setSettingsDraft({ ...settingsDraft, max_parallel_requests: Number(event.target.value) || 1 })} /></label>
             <label>Batch size<input type="number" value={settingsDraft.max_batch_size} onChange={(event) => setSettingsDraft({ ...settingsDraft, max_batch_size: Number(event.target.value) || 1 })} /></label>

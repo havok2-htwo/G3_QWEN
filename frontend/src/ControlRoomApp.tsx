@@ -574,7 +574,7 @@ export function ControlRoomApp() {
         {message ? <div className="message success">{message}</div> : null}
         {error ? <div className="message error">{error}</div> : null}
         {activeTab === 'settings' ? (
-          <SettingsView value={settings} onChange={setSettings} onSave={handleSaveSettings} />
+          <SettingsView value={settings} voices={snapshot?.voices ?? []} onChange={setSettings} onSave={handleSaveSettings} />
         ) : snapshot ? (
           <>
             {activeTab === 'overview' && (

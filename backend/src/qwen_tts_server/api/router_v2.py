@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
+from ..config import save_runtime_settings
 from ..domain.models import (
     AdminKeyMetadata,
     AdminKeyResponse,
@@ -325,6 +326,7 @@ async def update_admin_settings(request: Request, payload: ServerSettingsUpdateR
     if payload.stream_prebuffer_ms is not None:
         settings.stream_prebuffer_ms = payload.stream_prebuffer_ms
 
+    save_runtime_settings(settings)
     return _settings_response(settings)
 
 

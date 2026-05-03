@@ -191,6 +191,11 @@ class QueueService:
             'worker_state': self.store.worker_state,
         }
 
+    def _mark_loaded_model_locked(self, model_id: str) -> None:
+        self.store.active_model = model_id
+        self.store.models_loaded.clear()
+        self.store.models_loaded.add(model_id)
+
     async def _worker_loop(self) -> None:
         self.store.worker_state = 'idle'
         await self._publish_state()
@@ -283,8 +288,7 @@ class QueueService:
             async with self.store.job_condition:
                 self.store.current_batch = None
                 self.store.worker_state = 'idle'
-                self.store.active_model = model_used
-                self.store.models_loaded.add(model_used)
+                self._mark_loaded_model_locked(model_used)
                 self.store.recent_batches.append(current_batch)
                 results_by_key = {(item.job_id, item.sentence_index): item for item in results}
 
@@ -351,8 +355,7 @@ class QueueService:
             overlap=4,
         ):
             async with self.store.job_condition:
-                self.store.active_model = model_used
-                self.store.models_loaded.add(model_used)
+                self._mark_loaded_model_locked(model_used)
                 for result in results:
                     job = self.store.jobs.get(result.job_id)
                     state = self.store.request_states.get(result.job_id)
@@ -361,9 +364,6 @@ class QueueService:
                     if job.cancel_requested:
                         self._mark_cancelled_locked(job, 'Cancelled during native streaming.')
                         continue
-
-                    key = (result.job_id, result.sentence_index)
-                    durations_by_key[key] = durations_by_key.get(key, 0) + result.duration_ms
 
                     job.model_used = model_used
                     job.sample_rate = result.sample_rate
@@ -374,7 +374,11 @@ class QueueService:
                         job.metrics['model_warm_ms'] = warm_ms
                     job.metrics['batch_count'] = state.batch_count
 
-                    if result.sentence_index == state.next_emit_sentence_index:
+                    if result.pcm:
+                        key = (result.job_id, result.sentence_index)
+                        durations_by_key[key] = durations_by_key.get(key, 0) + result.duration_ms
+
+                    if result.pcm and result.sentence_index == state.next_emit_sentence_index:
                         prebuffer_ms = max(0, int(getattr(self.settings, 'stream_prebuffer_ms', 0)))
                         already_started = state.chunk_index_by_sentence.get(result.sentence_index, 0) > 0
                         if prebuffer_ms > 0 and not already_started:
@@ -384,7 +388,7 @@ class QueueService:
                             if buffered_ms >= prebuffer_ms:
                                 pending_chunks = state.pending_preview_pcm.pop(result.sentence_index, [])
                                 state.pending_preview_duration_ms.pop(result.sentence_index, None)
-                                for chunk in pending_chunks:
+                                for pending_index, chunk in enumerate(pending_chunks):
                                     self._emit_native_chunk_locked(
                                         job,
                                         state,
@@ -392,6 +396,8 @@ class QueueService:
                                         pcm=chunk,
                                         sample_rate=result.sample_rate,
                                         batch_id=batch_id,
+                                        final_chunk_of_sentence=result.sentence_finished
+                                        and pending_index == len(pending_chunks) - 1,
                                     )
                         else:
                             self._emit_native_chunk_locked(
@@ -401,17 +407,20 @@ class QueueService:
                                 pcm=result.pcm,
                                 sample_rate=result.sample_rate,
                                 batch_id=batch_id,
+                                final_chunk_of_sentence=result.sentence_finished,
                             )
-                    else:
+                    elif result.pcm:
                         state.pending_preview_pcm.setdefault(result.sentence_index, []).append(result.pcm)
                         state.pending_preview_duration_ms.setdefault(result.sentence_index, []).append(result.duration_ms)
+                    if result.sentence_finished:
+                        state.completed_streaming_sentence_indices.add(result.sentence_index)
+                        self._flush_native_streaming_sentences_locked(job, state, batch_id=batch_id)
                 self.store.job_condition.notify_all()
 
         async with self.store.job_condition:
             self.store.current_batch = None
             self.store.worker_state = 'idle'
-            self.store.active_model = model_used
-            self.store.models_loaded.add(model_used)
+            self._mark_loaded_model_locked(model_used)
             self.store.recent_batches.append(current_batch)
 
             for item in batch_items:
