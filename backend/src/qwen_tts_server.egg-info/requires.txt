@@ -1,0 +1,14 @@
+fastapi<1.0,>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.4
+httpx>=0.27
+python-multipart>=0.0.9
+numpy>=1.26
+soundfile>=0.12
+huggingface-hub>=0.30
+qwen-tts>=0.1.1
+triton-windows>=3.0
+
+[dev]
+pytest>=8.0
